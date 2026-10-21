@@ -4,6 +4,8 @@
 //     detect 'launch failed' immediately, retry up to 4 times on a fresh sdb connection.
 // v2: jsDelivr's @main cache served a stale userScript for hours (2026-10-21), so fetch the script straight from
 //     raw.githubusercontent.com at every launch and inject that; bundled/CDN copy only as fallback.
+// v3: an sdb ECONNRESET crashed the whole service (app then stuck on 'Loading'): keep it alive and report.
+try { process.on('uncaughtException', function (e) { ctx.report('svc-exc', (e && e.message) || e); }); } catch (e) {}
 var orig = ctx.impl();
 var RAW = 'https://raw.githubusercontent.com/BillyBWinsAgain/tvadblock-' + ctx.CFG.svc + '/main/dist/userScript.js';
 function fresh() {
