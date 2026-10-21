@@ -1121,7 +1121,7 @@ ${details.xhr.response}`);
         responseProps.type = { value: responseType };
       }
     }
-    proxyApplyFn("fetch", function fetch(context) {
+    proxyApplyFn("fetch", function fetch2(context) {
       const { callArgs } = context;
       const details = collateFetchArgumentsFn(...callArgs);
       if (safe.logLevel > 1 || propsToMatch === "" && responseBody === "") {
@@ -1477,6 +1477,9 @@ try {
       if (window.__tvabHuluUI && /^\/watch\//.test(location.pathname)) {
         return;
       }
+      if (window.__tvabMaxUI && /^\/video\/watch\//.test(location.pathname)) {
+        return;
+      }
       var active = document.activeElement;
       if (isText(active) && (e.keyCode === 37 || e.keyCode === 39)) {
         return;
@@ -1551,6 +1554,582 @@ try {
 } catch (e) {
 }
 try {
+  (function tvabMaxUI() {
+    if (window.__tvabMaxUI || !/^play\.(hbo)?max\.com$/.test(location.hostname)) {
+      return;
+    }
+    window.__tvabMaxUI = true;
+    var API = "https://default.any-amer.prd.api.hbomax.com";
+    var HDR = {
+      "x-disco-client": "WEB:NT 10.0:beam:5.0.0",
+      "x-disco-params": "realm=bolt,bid=beam,features=ar",
+      "x-device-info": "beam/5.0.0 (desktop/desktop; Windows/NT 10.0; tvadblock/tvadblock)"
+    };
+    var Q = "include=default&decorators=viewingHistory,isFavorite,contentAction,badges";
+    var onWatch = function() {
+      return /^\/video\/watch\//.test(location.pathname);
+    };
+    var KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, OK: 13, BACK: 10009, PLAYPAUSE: 10252, PLAY: 415, PAUSE: 19, FF: 417, RW: 412, STOP: 413 };
+    try {
+      ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"].forEach(function(k) {
+        tizen.tvinputdevice.registerKey(k);
+      });
+    } catch (e) {
+    }
+    function get(path) {
+      return fetch(API + path, { credentials: "include", headers: HDR }).then(function(r) {
+        if (r.status === 401 || r.status === 403) {
+          throw new Error("signin");
+        }
+        return r.json().then(function(j) {
+          var er = j && j.errors && j.errors[0];
+          if (er) {
+            throw new Error(/token/i.test(er.code || "") ? "signin" : er.detail || er.code || "api");
+          }
+          return j;
+        });
+      });
+    }
+    function index(j) {
+      var by = {};
+      (j.included || []).forEach(function(x) {
+        by[x.type + ":" + x.id] = x;
+      });
+      if (j.data && j.data.type) {
+        by[j.data.type + ":" + j.data.id] = j.data;
+      }
+      return by;
+    }
+    function ref(by, d) {
+      return d ? by[d.type + ":" + d.id] : null;
+    }
+    function relOne(by, o, name) {
+      var r = o && o.relationships && o.relationships[name];
+      return r && r.data && !Array.isArray(r.data) ? ref(by, r.data) : null;
+    }
+    function relMany(by, o, name) {
+      var r = o && o.relationships && o.relationships[name];
+      return r && Array.isArray(r.data) ? r.data.map(function(d) {
+        return ref(by, d);
+      }).filter(Boolean) : [];
+    }
+    function art(by, o) {
+      var ims = relMany(by, o, "images").map(function(i) {
+        return i.attributes || {};
+      });
+      var wide = function(a) {
+        return a.width > a.height * 1.5;
+      };
+      var pick = null;
+      ["default", "cover-artwork-horizontal"].some(function(k) {
+        pick = ims.find(function(a) {
+          return a.kind === k && wide(a);
+        });
+        return pick;
+      });
+      if (!pick) {
+        pick = ims.find(wide);
+      }
+      return pick && pick.src ? pick.src + "?w=600&f=webp" : "";
+    }
+    function editOf(by, v) {
+      var e = relOne(by, v, "edit");
+      return e ? e.id : null;
+    }
+    function playable(v) {
+      var t = v.attributes.videoType;
+      return t !== "SHORT_PREVIEW" && !/^short-preview:/.test(v.id);
+    }
+    function tileFor(by, ci) {
+      var s = relOne(by, ci, "show");
+      if (s) {
+        var movie = s.attributes.showType === "MOVIE";
+        return { label: s.attributes.name || "", image: art(by, s), browse: (movie ? "movie/" : "show/") + s.id, movie };
+      }
+      var v = relOne(by, ci, "video");
+      if (v && playable(v)) {
+        var ed = editOf(by, v);
+        if (!ed) {
+          return null;
+        }
+        var a = v.attributes, show = relOne(by, v, "show");
+        var label = a.videoType === "EPISODE" && show ? show.attributes.name + "  S" + a.seasonNumber + " E" + a.episodeNumber : a.name || "";
+        return { label, image: art(by, v) || (show ? art(by, show) : ""), play: v.id + "/" + ed };
+      }
+      return null;
+    }
+    function itemsOf(by, col) {
+      return relMany(by, col, "items").map(function(ci) {
+        return tileFor(by, ci);
+      }).filter(Boolean);
+    }
+    var SKIP = /^(multilevel|1-1|showcase|tab-group|tab$)/;
+    function homeScreen() {
+      return get("/cms/routes/home?" + Q + "&page[items.size]=16").then(function(j) {
+        var by = index(j);
+        var page = relOne(by, j.data, "target");
+        var rows = [];
+        relMany(by, page, "items").forEach(function(pi) {
+          var c = relOne(by, pi, "collection");
+          if (!c) {
+            return;
+          }
+          var comp = c.attributes.component || {};
+          if (SKIP.test(comp.id || "")) {
+            return;
+          }
+          var name = comp.id === "hero" ? "Featured" : c.attributes.title || "";
+          if (!name) {
+            return;
+          }
+          var has = c.relationships && c.relationships.items;
+          rows.push({ name, items: has ? itemsOf(by, c) : [], lazy: has ? null : { id: c.id, mp: comp.mandatoryParams || "" } });
+        });
+        rows = rows.filter(function(r) {
+          return r.lazy || r.items.length;
+        });
+        var cw = rows.findIndex(function(r) {
+          return /continue watching/i.test(r.name);
+        });
+        if (cw > 0) {
+          rows.unshift(rows.splice(cw, 1)[0]);
+        }
+        if (!rows.length) {
+          throw new Error("signin");
+        }
+        return { title: "Home", rows, r: 0, c: 0 };
+      });
+    }
+    function loadRow(scr, row) {
+      if (!row.lazy || row.loading) {
+        return;
+      }
+      row.loading = true;
+      get("/cms/collections/" + row.lazy.id + "?" + Q + "&page[items.size]=24" + (row.lazy.mp ? "&" + row.lazy.mp : "")).then(function(j) {
+        var by = index(j);
+        row.items = itemsOf(by, j.data);
+      }).catch(function() {
+        row.items = [];
+      }).then(function() {
+        row.lazy = null;
+        row.loading = false;
+        if (!row.items.length) {
+          var i = scr.rows.indexOf(row);
+          if (i >= 0 && scr.rows.length > 1) {
+            scr.rows.splice(i, 1);
+            if (scr.r > i || scr.r >= scr.rows.length) {
+              scr.r = Math.max(0, scr.r - 1);
+            }
+          }
+        }
+        if (scr.r < scr.rows.length && scr.rows[scr.r] === row) {
+          scr.c = Math.min(scr.c, Math.max(0, row.items.length - 1));
+        }
+        if (stack[stack.length - 1] === scr && root && root.style.display !== "none") {
+          render();
+        }
+      });
+    }
+    function seasonTiles(by, col) {
+      return relMany(by, col, "items").map(function(ci) {
+        var v = relOne(by, ci, "video");
+        if (!v || !playable(v)) {
+          return null;
+        }
+        var ed = editOf(by, v);
+        if (!ed) {
+          return null;
+        }
+        var a = v.attributes;
+        return { label: (a.episodeNumber ? a.episodeNumber + ". " : "") + (a.name || ""), image: art(by, v), play: v.id + "/" + ed };
+      }).filter(Boolean);
+    }
+    function showScreen(id, name) {
+      return get("/cms/routes/show/" + id + "?" + Q + "&page[items.size]=24").then(function(j) {
+        var by = index(j);
+        var cols = (j.included || []).filter(function(x) {
+          return x.type === "collection";
+        });
+        var seasonCol = cols.find(function(c) {
+          var cp2 = c.attributes.component || {};
+          return cp2.id === "tabbed-content" && cp2.filters && cp2.filters[0] && cp2.filters[0].options && cp2.filters[0].options.length;
+        });
+        var rows = [], loads = [];
+        if (seasonCol) {
+          var cp = seasonCol.attributes.component, f = cp.filters[0];
+          f.options.forEach(function(opt) {
+            var row = { name: (f.id === "seasonNumber" ? "Season " : "") + opt.value, items: [] };
+            rows.push(row);
+            loads.push(get("/cms/collections/" + seasonCol.id + "?" + Q + "&page[items.size]=100&" + cp.mandatoryParams + "&" + opt.parameter).then(function(s) {
+              row.items = seasonTiles(index(s), s.data);
+            }).catch(function() {
+            }));
+          });
+        }
+        cols.forEach(function(c) {
+          var cp2 = c.attributes.component || {}, t = c.attributes.title || "";
+          if (c === seasonCol || cp2.id === "hero" || cp2.id === "tabbed-content" || SKIP.test(cp2.id || "") || !t || /^generic-/.test(t)) {
+            return;
+          }
+          var items = itemsOf(by, c);
+          if (items.length) {
+            rows.push({ name: t, items });
+          }
+        });
+        return Promise.all(loads).then(function() {
+          var show = by["show:" + id];
+          return { title: name || show && show.attributes.name || "Show", rows: rows.filter(function(r) {
+            return r.items.length;
+          }), r: 0, c: 0 };
+        });
+      });
+    }
+    function moviePlay(id) {
+      return get("/cms/routes/movie/" + id + "?" + Q + "&page[items.size]=1").then(function(j) {
+        var by = index(j);
+        var vids = (j.included || []).filter(function(x) {
+          return x.type === "video" && playable(x) && editOf(by, x);
+        });
+        var mine = vids.filter(function(v2) {
+          var s = v2.relationships && v2.relationships.show && v2.relationships.show.data;
+          return s && s.id === id;
+        });
+        var v = mine.find(function(x) {
+          return x.attributes.videoType === "MOVIE";
+        }) || mine.find(function(x) {
+          return x.attributes.videoType !== "TRAILER";
+        }) || mine[0];
+        if (!v) {
+          throw new Error("no playable video");
+        }
+        return v.id + "/" + editOf(by, v);
+      });
+    }
+    var css = [
+      "#tvab-root{position:fixed;inset:0;z-index:2147483646;background:#06070b;color:#fff;font-family:Arial,Helvetica,sans-serif;overflow:hidden}",
+      "body.tvab-on>*:not(#tvab-root){display:none!important}",
+      "#tvab-root .hdr{height:90px;display:flex;align-items:center;padding:0 60px;font-size:40px;font-weight:bold;color:#fff;letter-spacing:1px}",
+      "#tvab-root .hdr b{color:#4f7cff;margin-left:12px}",
+      "#tvab-root .hdr small{color:#aaa;font-size:24px;margin-left:24px;font-weight:normal;letter-spacing:0}",
+      "#tvab-root .rows{position:absolute;top:90px;left:0;right:0;bottom:0;transition:transform .2s}",
+      "#tvab-root .row{height:330px;padding-left:60px}",
+      "#tvab-root .row h2{font-size:30px;margin:10px 0 12px;color:#ddd;font-weight:bold}",
+      "#tvab-root .strip{display:flex;transition:transform .2s;white-space:nowrap}",
+      "#tvab-root .tile{flex:0 0 384px;height:216px;margin-right:24px;border-radius:10px;background:#1b1d26 center/cover no-repeat;position:relative;box-sizing:border-box;border:5px solid transparent}",
+      "#tvab-root .tile.f{border-color:#ffcc00;transform:scale(1.06)}",
+      "#tvab-root .tile.ld{background:#14161d}",
+      "#tvab-root .tile span{position:absolute;left:0;right:0;bottom:-44px;font-size:24px;color:#eee;overflow:hidden;text-overflow:ellipsis}",
+      "#tvab-root .msg{position:absolute;top:40%;width:100%;text-align:center;font-size:36px;color:#ccc}",
+      "#tvab-root .btn{display:inline-block;margin-top:30px;padding:18px 40px;border-radius:12px;background:#4f7cff;color:#fff;font-weight:bold;border:5px solid #ffcc00}"
+    ].join("\n");
+    function addCss() {
+      if (document.getElementById("tvab-ui-css")) {
+        return;
+      }
+      var s = document.createElement("style");
+      s.id = "tvab-ui-css";
+      s.textContent = css;
+      var host = document.head || document.documentElement;
+      if (!host) {
+        return;
+      }
+      host.appendChild(s);
+    }
+    var stack = [];
+    var root = null;
+    function el(tag, cls, text) {
+      var e = document.createElement(tag);
+      if (cls) {
+        e.className = cls;
+      }
+      if (text != null) {
+        e.textContent = text;
+      }
+      return e;
+    }
+    function ensureRoot() {
+      if (!root) {
+        root = el("div");
+        root.id = "tvab-root";
+        (document.body || document.documentElement).appendChild(root);
+      }
+      root.style.display = "";
+      if (document.body) {
+        document.body.classList.add("tvab-on");
+      }
+    }
+    function render() {
+      var scr = stack[stack.length - 1];
+      ensureRoot();
+      root.textContent = "";
+      var hdr = el("div", "hdr", "HBO");
+      hdr.appendChild(el("b", null, "max"));
+      hdr.appendChild(el("small", null, scr.title + "  \xB7  No Ads"));
+      root.appendChild(hdr);
+      var rowsEl = el("div", "rows");
+      root.appendChild(rowsEl);
+      scr.rows.forEach(function(row, ri) {
+        var rEl = el("div", "row");
+        if (ri < scr.r - 2 || ri > scr.r + 4) {
+          rowsEl.appendChild(rEl);
+          return;
+        }
+        rEl.appendChild(el("h2", null, row.name));
+        var strip = el("div", "strip");
+        if (!row.items.length) {
+          var ld = el("div", "tile ld" + (ri === scr.r ? " f" : ""));
+          ld.appendChild(el("span", null, "Loading\u2026"));
+          strip.appendChild(ld);
+        }
+        var cc = ri === scr.r ? scr.c : row.c || 0;
+        row.items.forEach(function(t, ci) {
+          var tile = el("div", "tile" + (ri === scr.r && ci === scr.c ? " f" : ""));
+          if (t.image && ri >= scr.r - 1 && ri <= scr.r + 2 && ci >= cc - 2 && ci <= cc + 6) {
+            tile.style.backgroundImage = 'url("' + t.image + '")';
+          }
+          tile.appendChild(el("span", null, t.label));
+          strip.appendChild(tile);
+        });
+        strip.style.transform = "translateX(" + -Math.max(0, cc - 1) * 408 + "px)";
+        rEl.appendChild(strip);
+        rowsEl.appendChild(rEl);
+      });
+      rowsEl.style.transform = "translateY(" + -Math.max(0, scr.r) * 330 + "px)";
+      for (var i = Math.max(0, scr.r - 1); i <= Math.min(scr.rows.length - 1, scr.r + 3); i++) {
+        if (scr.rows[i].lazy) {
+          loadRow(scr, scr.rows[i]);
+        }
+      }
+    }
+    function message(text, buttonText) {
+      ensureRoot();
+      root.textContent = "";
+      var m = el("div", "msg", text);
+      if (buttonText) {
+        m.appendChild(el("br"));
+        m.appendChild(el("div", "btn", buttonText));
+      }
+      root.appendChild(m);
+    }
+    var retry = null, signin = false, busy = false;
+    function fail(e) {
+      busy = false;
+      if (String(e && e.message) === "signin") {
+        signinPrompt();
+        return;
+      }
+      message("Could not load HBO Max. Press OK to retry.");
+      retry = function() {
+        if (stack.length) {
+          render();
+        } else {
+          start();
+        }
+      };
+    }
+    function push(p) {
+      busy = true;
+      message("Loading\u2026");
+      return p.then(function(scr) {
+        busy = false;
+        stack.push(scr);
+        render();
+      }).catch(fail);
+    }
+    function signinPrompt() {
+      signin = true;
+      message("Sign in to HBO Max once. Press OK, then type your email and password with the TV keyboard.", "Sign in");
+    }
+    function hideUI() {
+      if (root) {
+        root.style.display = "none";
+      }
+      if (document.body) {
+        document.body.classList.remove("tvab-on");
+      }
+    }
+    function watch(id) {
+      try {
+        sessionStorage.setItem("tvab-stack", JSON.stringify(stack));
+      } catch (x) {
+      }
+      location.href = "/video/watch/" + id;
+    }
+    function stop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) {
+        e.stopImmediatePropagation();
+      }
+    }
+    function onKey(e) {
+      var k = e.keyCode;
+      if (onWatch()) {
+        return playerKey(e);
+      }
+      if (!root || root.style.display === "none") {
+        return;
+      }
+      if (signin) {
+        if (k === KEY.OK) {
+          stop(e);
+          signin = false;
+          hideUI();
+          location.href = "https://auth.hbomax.com/login";
+        }
+        return;
+      }
+      if (busy) {
+        if (k !== KEY.BACK) {
+          stop(e);
+        }
+        return;
+      }
+      if (retry && k === KEY.OK) {
+        stop(e);
+        var f = retry;
+        retry = null;
+        f();
+        return;
+      }
+      var scr = stack[stack.length - 1];
+      if (!scr || !scr.rows.length) {
+        return;
+      }
+      var row = scr.rows[scr.r];
+      var handled = true;
+      var land = function() {
+        var n = scr.rows[scr.r];
+        scr.c = Math.max(0, Math.min(n.c || 0, n.items.length - 1));
+      };
+      if (k === KEY.RIGHT) {
+        scr.c = Math.max(0, Math.min(row.items.length - 1, scr.c + 1));
+      } else if (k === KEY.LEFT) {
+        scr.c = Math.max(0, scr.c - 1);
+      } else if (k === KEY.DOWN) {
+        row.c = scr.c;
+        scr.r = Math.min(scr.rows.length - 1, scr.r + 1);
+        land();
+      } else if (k === KEY.UP) {
+        row.c = scr.c;
+        scr.r = Math.max(0, scr.r - 1);
+        land();
+      } else if (k === KEY.OK) {
+        var t = row.items[scr.c];
+        if (!t) {
+          return stop(e);
+        }
+        if (t.play) {
+          stop(e);
+          watch(t.play);
+          return;
+        }
+        if (t.movie) {
+          stop(e);
+          busy = true;
+          message("Starting " + t.label + "\u2026");
+          moviePlay(t.browse.replace(/^movie\//, "")).then(watch).catch(fail);
+          return;
+        }
+        if (t.browse) {
+          stop(e);
+          push(showScreen(t.browse.replace(/^show\//, ""), t.label));
+          return;
+        }
+      } else if (k === KEY.BACK) {
+        if (stack.length > 1) {
+          stack.pop();
+          render();
+        } else {
+          try {
+            tizen.application.getCurrentApplication().exit();
+          } catch (x) {
+          }
+        }
+      } else {
+        handled = false;
+      }
+      if (handled) {
+        stop(e);
+        render();
+      }
+    }
+    function video() {
+      return document.querySelector("video");
+    }
+    function playerKey(e) {
+      var v = video(), k = e.keyCode;
+      if (k === KEY.BACK) {
+        stop(e);
+        location.href = "/";
+        return;
+      }
+      if (!v) {
+        return;
+      }
+      if (k === KEY.OK || k === KEY.PLAYPAUSE) {
+        stop(e);
+        if (v.paused) {
+          v.play();
+        } else {
+          v.pause();
+        }
+      } else if (k === KEY.PLAY) {
+        stop(e);
+        v.play();
+      } else if (k === KEY.PAUSE || k === KEY.STOP) {
+        stop(e);
+        v.pause();
+      } else if (k === KEY.RIGHT || k === KEY.FF) {
+        stop(e);
+        v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 10);
+      } else if (k === KEY.LEFT || k === KEY.RW) {
+        stop(e);
+        v.currentTime = Math.max(0, v.currentTime - 10);
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    function start() {
+      addCss();
+      if (onWatch()) {
+        return;
+      }
+      if (/^\/(signin|sign-in|login|account|profile|settings)/i.test(location.pathname)) {
+        return;
+      }
+      var saved = null;
+      try {
+        saved = JSON.parse(sessionStorage.getItem("tvab-stack") || "null");
+        sessionStorage.removeItem("tvab-stack");
+      } catch (x) {
+      }
+      if (saved && saved.length) {
+        saved.forEach(function(s) {
+          s.rows.forEach(function(r) {
+            r.loading = false;
+          });
+        });
+        stack = saved;
+        render();
+        return;
+      }
+      stack = [];
+      push(homeScreen());
+    }
+    if (document.readyState === "loading" || !document.body) {
+      document.addEventListener("DOMContentLoaded", function() {
+        try {
+          start();
+        } catch (e) {
+        }
+      });
+    } else {
+      try {
+        start();
+      } catch (e) {
+      }
+    }
+  })();
 } catch (e) {
 }
 try {
