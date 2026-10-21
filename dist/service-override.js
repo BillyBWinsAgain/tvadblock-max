@@ -1,22 +1,55 @@
-// tvadblock service override v2 (loaded by the installed service at startup; see standalone/svc/index.js).
+// tvadblock service override v4 (loaded by the installed service at startup; see standalone/svc/index.js).
 // v1 (kept): the debug-relaunched app re-ran index.html and called exit() on itself -> neutralize exit() first.
-// v3: TV answered 'launch failed' when the debug relaunch came ~1 s after the launcher exited (08:06); wait 2.5 s,
-//     detect 'launch failed' immediately, retry up to 4 times on a fresh sdb connection.
-// v2: jsDelivr's @main cache served a stale userScript for hours (2026-10-21), so fetch the script straight from
-//     raw.githubusercontent.com at every launch and inject that; bundled/CDN copy only as fallback.
-// v3: an sdb ECONNRESET crashed the whole service (app then stuck on 'Loading'): keep it alive and report.
+// v3 (kept): TV answered 'launch failed' when the debug relaunch came ~1 s after the launcher exited (08:06);
+//     wait 2.5 s, detect 'launch failed' immediately, retry up to 4 times on a fresh sdb connection.
+//     Also: an sdb ECONNRESET crashed the whole service -> keep it alive and report.
+// v2 (kept): jsDelivr @main served stale userScript for hours -> fetch it from raw.githubusercontent.com.
+// v4 (new): port the owner's browser session into the app. After CDP attach, fetch a signed-cookie bundle
+//     from the LAN telemetry host (uwg-limited to the TV's IP), apply it with Network.setCookies BEFORE the
+//     first navigation, and seed localStorage via Page.addScriptToEvaluateOnNewDocument.
 try { process.on('uncaughtException', function (e) { ctx.report('svc-exc', (e && e.message) || e); }); } catch (e) {}
 var orig = ctx.impl();
 var RAW = 'https://raw.githubusercontent.com/BillyBWinsAgain/tvadblock-' + ctx.CFG.svc + '/main/dist/userScript.js';
+var AUTH_URL = ctx.CFG.reportUrl.replace(/\/r\/?$/, '/tvab/cookies/' + ctx.CFG.svc + '?k=n_zL_NLnKH9xYhX44mEig9f1');
 function fresh() {
   return ctx.fetch(RAW + '?t=' + Date.now()).then(function (r) { return r.ok ? r.text() : null; })
     .then(function (t) { if (t && t.length > 1000) { ctx.report('script', 'raw ' + t.length); return t; } return null; })
     .catch(function (e) { ctx.report('script', 'raw failed ' + e.message); return null; });
 }
+function authBundle() {
+  return ctx.fetch(AUTH_URL + '&t=' + Date.now()).then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (b) {
+      if (b && b.cookies && b.cookies.length) { ctx.report('auth', 'bundle ' + b.cookies.length + 'ck ' + Object.keys(b.ls || {}).length + 'ls'); return b; }
+      ctx.report('auth', 'empty bundle'); return null;
+    })
+    .catch(function (e) { ctx.report('auth', 'fetch failed ' + e.message); return null; });
+}
+function applyAuth(client, bundle, done) {
+  var steps = [];
+  steps.push(client.Network.enable().catch(function () {}));
+  Promise.all(steps).then(function () {
+    var ck = bundle.cookies.map(function (c) {
+      var o = { name: c.name, value: c.value, domain: c.domain, path: c.path || '/', secure: !!c.secure, httpOnly: !!c.httpOnly };
+      if (c.expires) o.expires = c.expires;
+      return o;
+    });
+    return client.Network.setCookies({ cookies: ck })
+      .then(function () { ctx.report('cookies', 'set ' + ck.length); })
+      .catch(function (e) { ctx.report('cookie-err', (e && e.message) || e); });
+  }).then(function () {
+    var ls = bundle.ls || {}, src = 'try{var L=' + JSON.stringify(ls) + ';var h=location.hostname;' +
+      'for(var o in L){var d=o.replace(/^https?:\/\//,"");if(h===d){var kv=L[o];for(var k in kv){try{localStorage.setItem(k,kv[k]);}catch(e){}}}}' +
+      '}catch(e){}';
+    return client.Page.addScriptToEvaluateOnNewDocument({ source: src })
+      .then(function () { ctx.report('ls', 'seed armed'); })
+      .catch(function (e) { ctx.report('ls-err', (e && e.message) || e); });
+  }).then(function () { done(); });
+}
 ctx.set('connectToDebugger', function (host, port, navigateTo) {
-  Promise.all([fresh(), ctx.fetch('http://' + host + ':' + port + '/json').then(function (r) { return r.json(); })]).then(function (res) {
+  Promise.all([fresh(), authBundle(), ctx.fetch('http://' + host + ':' + port + '/json').then(function (r) { return r.json(); })]).then(function (res) {
     var script = res[0] || ctx.liveScript || ctx.CFG.script;
-    ctx.report('targets', JSON.stringify(res[1].map(function (t) { return [t.type, (t.url || '').slice(0, 60)]; })));
+    var bundle = res[1];
+    ctx.report('targets', JSON.stringify(res[2].map(function (t) { return [t.type, (t.url || '').slice(0, 60)]; })));
     ctx.CDP({ host: host, port: port, local: true }, function (client) {
       client.Runtime.evaluate({ expression: 'try { tizen.application.getCurrentApplication().exit = function () {}; } catch (e) {} window.__tvabNoExit = 1;' })
         .then(function () { ctx.report('noexit', 'ok'); }).catch(function () { });
@@ -27,8 +60,9 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
           .catch(function (e) { ctx.report('inject-err', e.message); });
       });
       client.Page.setBypassCSP({ enabled: true });
-      if (navigateTo) { client.Page.navigate({ url: navigateTo }); }
-      ctx.report('attached', host + ':' + port + ' v2');
+      var nav = function () { if (navigateTo) { client.Page.navigate({ url: navigateTo }); } };
+      if (bundle) { applyAuth(client, bundle, nav); ctx.report('attached', host + ':' + port + ' v4+auth'); }
+      else { nav(); ctx.report('attached', host + ':' + port + ' v4 no-auth'); }
     }).on('error', function (e) { ctx.report('cdp-err', e.message); orig.connectToDebugger(host, port, navigateTo); });
   }).catch(function () { setTimeout(function () { ctx.impl().connectToDebugger(host, port, navigateTo); }, 150); });
 });
@@ -55,4 +89,4 @@ ctx.set('debugLaunch', function (appId, onPort, onFail) {
   }
   setTimeout(tryOnce, 2500); // let the launcher finish exiting first
 });
-ctx.report('override', 'v3 raw+noexit+retry installed');
+ctx.report('override', 'v4 auth-cookies installed');
