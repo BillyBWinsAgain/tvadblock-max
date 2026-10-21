@@ -1,3 +1,43 @@
+try {
+  (function tvabLauncherGuard() {
+    if (location.protocol !== "file:") {
+      return;
+    }
+    var nx = function() {
+    };
+    try {
+      var A = tizen.application, P = Object.getPrototypeOf(A.getCurrentApplication());
+      try {
+        P.exit = nx;
+      } catch (e) {
+      }
+      try {
+        Object.defineProperty(P, "exit", { value: nx, configurable: true, writable: true });
+      } catch (e) {
+      }
+      var g = A.getCurrentApplication, w = function() {
+        var x = g.apply(A, arguments);
+        try {
+          x.exit = nx;
+        } catch (e) {
+        }
+        return x;
+      };
+      try {
+        A.getCurrentApplication = w;
+      } catch (e) {
+      }
+      try {
+        Object.getPrototypeOf(A).getCurrentApplication = w;
+      } catch (e) {
+      }
+      window.__tvabNoExit = A.getCurrentApplication().exit === nx ? 2 : 1;
+    } catch (e) {
+      window.__tvabNoExit = 0;
+    }
+  })();
+} catch (e) {
+}
 (function tvadblock() {
   if (!/(^|\.)(play\.hbomax\.com|play\.max\.com)$/.test(location.hostname) && location.protocol !== "file:" && location.protocol !== "app:" && !/^(localhost|127.0.0.1)$/.test(location.hostname)) {
     return;
@@ -1806,7 +1846,7 @@ try {
       });
     }
     var css = [
-      "#tvab-root{position:fixed;inset:0;z-index:2147483646;background:#06070b;color:#fff;font-family:Arial,Helvetica,sans-serif;overflow:hidden}",
+      "#tvab-root{position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;z-index:2147483646;background:#06070b;color:#fff;font-family:Arial,Helvetica,sans-serif;overflow:hidden}",
       "body.tvab-on>*:not(#tvab-root){display:none!important}",
       "#tvab-root .hdr{height:90px;display:flex;align-items:center;padding:0 60px;font-size:40px;font-weight:bold;color:#fff;letter-spacing:1px}",
       "#tvab-root .hdr b{color:#4f7cff;margin-left:12px}",
