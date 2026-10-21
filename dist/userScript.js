@@ -38,6 +38,20 @@ try {
   })();
 } catch (e) {
 }
+try {
+  (function tvabPolyfills() {
+    if (typeof Object.hasOwn !== "function") {
+      Object.defineProperty(Object, "hasOwn", {
+        value: function hasOwn(o, k) {
+          return Object.prototype.hasOwnProperty.call(Object(o), k);
+        },
+        configurable: true,
+        writable: true
+      });
+    }
+  })();
+} catch (e) {
+}
 (function tvadblock() {
   if (!/(^|\.)(play\.hbomax\.com|play\.max\.com)$/.test(location.hostname) && location.protocol !== "file:" && location.protocol !== "app:" && !/^(localhost|127.0.0.1)$/.test(location.hostname)) {
     return;

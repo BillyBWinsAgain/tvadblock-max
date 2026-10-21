@@ -1,5 +1,14 @@
-// tvadblock service override v9 (loaded by the installed service at startup; see standalone/svc/index.js).
-// v9 (new): the override re-fetches itself on every open from the home screen (VERSION marker) and swaps
+// tvadblock service override v13 (loaded by the installed service at startup; see standalone/svc/index.js).
+// v13 (new): Hulu runs as Hulu's own TV app (tizenbbd.app.hulu.com/livingroom/tizenbbd/1, found via v12) inside the
+//   launcher's local page: hulu.com's web player cannot run on Chrome 76 (?. and ?? syntax), the TV build can.
+//   No navigation; ported web cookies are deleted (they made auth.hulu.com answer 431); webapis calls our package
+//   lacks privileges for get this TV's own values (REST api/v2); exit() is restored once Hulu's boot starts.
+// v12 (kept): probe walks the native app's data/ (web engine disk cache keeps request URLs in clear) and uploads
+//   cache files only (never Cookies / Login / token stores) to find the exact tizenbbd.app.hulu.com app URL.
+// v11 (kept): probe reads res/config.xml, widget.license and the .tmg app archive (v10 found them in res/, not res/wgt/).
+// v10 (kept): one-time probe after a launch reads the native Hulu stub (config.xml = URL of Hulu's own TV web app) over
+//   the TV's local sdbd sync protocol and uploads it to the T630.
+// v9 (kept): the override re-fetches itself on every open from the home screen (VERSION marker) and swaps
 //   its logic in place, so a fix on the T630 applies on the next open without restarting the TV.
 // v8 (kept) -- the "opens, then crashes back to the home channel" bug:
 //   The installed service marks itself "connecting" only inside its ORIGINAL debugLaunch. The v3+ replacement
@@ -13,7 +22,7 @@
 // v7 (kept): attach + noexit first, script/auth fetched in the background.
 // v4-v6 (kept): owner's browser session -> Network.setCookies + localStorage seed before navigation.
 // v3 (kept): 2.5 s delay + fast 'launch failed' detection + retries; uncaughtException guard.
-var VERSION = 'v9';
+var VERSION = 'v13';
 var G = global.__tvab || (global.__tvab = {});
 if (!G.exc) { G.exc = true; try { process.on('uncaughtException', function (e) { ctx.report('svc-exc', (e && e.message) || e); }); } catch (e) {} }
 var ORIG = ctx.impl();
@@ -97,12 +106,80 @@ if (!G.hooked) {
 
 // exit() lives on the Application prototype; getCurrentApplication() hands out a fresh object each call.
 var NOEXIT = '(function(){var nx=function(){};try{var A=tizen.application,a=A.getCurrentApplication(),P=Object.getPrototypeOf(a);' +
+  'if(!window.__tvabExitRestore){var oe=P.exit,og=A.getCurrentApplication;window.__tvabExitRestore=function(){try{Object.defineProperty(P,"exit",{value:oe,configurable:true,writable:true});}catch(e){}try{A.getCurrentApplication=og;}catch(e){}};}' +
   'try{P.exit=nx;}catch(e){}try{Object.defineProperty(P,"exit",{value:nx,configurable:true,writable:true});}catch(e){}' +
   'var g=A.getCurrentApplication,w=function(){var x=g.apply(A,arguments);try{x.exit=nx;}catch(e){}return x;};' +
   'try{A.getCurrentApplication=w;}catch(e){}try{Object.getPrototypeOf(A).getCurrentApplication=w;}catch(e){}' +
   'window.__tvabNoExit=tizen.application.getCurrentApplication().exit===nx?2:1;}catch(e){window.__tvabNoExit=0;}return window.__tvabNoExit;})()';
 var STATE = '(function(){var r=document.getElementById("tvab-root");return location.href+" | inj="+!!(window.__tvadblock_hulu||window.__tvadblock_max)+' +
+  '" | boot="+(window.__tvabBoot||"-")+" | george="+typeof window.george+" | wapi="+JSON.stringify((window.__wapi||[]).filter(function(x,i,a){return a.indexOf(x)===i;}).slice(0,12))+' +
+  '" | body="+(document.body?(document.body.innerText||"").replace(/\\s+/g," ").slice(0,120):"")+' +
   '" | ui="+(r?(r.style.display==="none"?"hidden":(r.innerText||"").replace(/\\s+/g," ").slice(0,140)):"none")+" | title="+document.title;})()';
+
+// ---- v13: Hulu's own TV app (the build the native Samsung app loads), booted in the launcher's local page ----
+var TVAPP = ctx.CFG.svc === 'hulu';
+var LAUNCHER_GUARD = "if(location.protocol==='file:'){var of=window.fetch;window.fetch=function(u){if(String(u).indexOf(':811')>=0){return new Promise(function(){});}return of.apply(this,arguments);};}";
+function tvappBoot(H) {
+  if (window.__tvabBoot) { return 'already ' + window.__tvabBoot; }
+  window.__tvabBoot = 'starting';
+  function script(src) { return new Promise(function (res, rej) { var s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = function () { rej(new Error('load ' + src)); }; document.head.appendChild(s); }); }
+  // this TV's own values (REST http://<tv>:8001/api/v2/) for productinfo/adinfo calls our package has no privilege for
+  var FB = { 'productinfo.getModel': 'UN43TU690TFXZA', 'productinfo.getRealModel': 'UN43TU690TFXZA', 'productinfo.getModelCode': '21_KANTSU2E_UHD_BASIC1',
+    'productinfo.getDuid': '3c0d4318-4e35-4e8e-ab3d-87bb48481f54', 'productinfo.getFirmware': '', 'productinfo.isUdPanelSupported': true,
+    'productinfo.isUHDAModel': false, 'productinfo.is8KPanelSupported': false, 'productinfo.getLicensedVendor': 'Samsung',
+    'adinfo.getTIFA': '', 'adinfo.isLATEnabled': true };
+  window.__wapi = [];
+  function wrapAll() {
+    if (!window.webapis) { window.__wapi.push('no webapis'); return; }
+    Object.keys(webapis).forEach(function (ns) {
+      var o = webapis[ns]; if (!o || typeof o !== 'object') { return; }
+      Object.keys(o).concat(Object.getOwnPropertyNames(Object.getPrototypeOf(o) || {})).forEach(function (k) {
+        var f; try { f = o[k]; } catch (e) { return; }
+        if (typeof f !== 'function' || k === 'constructor') { return; }
+        try {
+          o[k] = function () {
+            try { return f.apply(o, arguments); } catch (e) {
+              var key = ns + '.' + k;
+              if (e && e.name === 'SecurityError' && key in FB) { window.__wapi.push(key + ' stand-in'); return FB[key]; }
+              window.__wapi.push(key + ' ' + (e && e.name)); throw e;
+            }
+          };
+        } catch (e) { }
+      });
+    });
+  }
+  script('$WEBAPIS/webapis/webapis.js').catch(function (e) { window.__wapi.push('webapis.js ' + e.message); })
+    .then(function () { wrapAll(); return fetch(H + '/livingroom/tizenbbd/1/index.html', { credentials: 'include' }); })
+    .then(function (r) { return r.text(); })
+    .then(function (html) {
+      var i0 = html.indexOf('manifest:'); if (i0 < 0) { throw new Error('no manifest'); }
+      i0 = html.indexOf('{', i0); var depth = 0, i1 = i0;
+      for (; i1 < html.length; i1++) { var ch = html.charAt(i1); if (ch === '{') { depth++; } else if (ch === '}') { depth--; if (!depth) { break; } } }
+      var manifest = JSON.parse(html.slice(i0, i1 + 1));
+      [].slice.call(document.querySelectorAll('style')).forEach(function (st) { st.parentNode.removeChild(st); });  // the launcher's centering css
+      document.body.innerHTML = '<button role="" autofocus style="opacity:0"></button>';
+      document.documentElement.style.cssText = ''; document.body.style.cssText = 'margin:0;background:#000';
+      var b = document.createElement('base'); b.href = H + '/livingroom/tizenbbd/1/'; document.head.appendChild(b);
+      window.bootData = { appStartupTime: Date.now() }; window.USE_STAGING = false; window.DEBUG = false; window.EDITORIAL = false; window.TESTING = false; window.UI_AUTOMATION = false;
+      window.tizenConnectionInfo = { ethernet: null, wifi: null };
+      return new Promise(function (res) {
+        var n = 0; function d() { if (++n === 2) { res(); } }
+        try {
+          tizen.systeminfo.getPropertyValue('WIFI_NETWORK', function (w) { tizenConnectionInfo.wifi = w; d(); }, d);
+          tizen.systeminfo.getPropertyValue('ETHERNET_NETWORK', function (e) { tizenConnectionInfo.ethernet = e; d(); }, d);
+          tizen.systeminfo.addPropertyValueChangeListener('WIFI_NETWORK', function (w) { tizenConnectionInfo.wifi = w; });
+          tizen.systeminfo.addPropertyValueChangeListener('ETHERNET_NETWORK', function (e) { tizenConnectionInfo.ethernet = e; });
+        } catch (e) { res(); }
+      }).then(function () { return script(H + manifest.urlRoot + 'boot.js'); }).then(function () {
+        if (window.__tvabExitRestore) { window.__tvabExitRestore(); }   // Back on Hulu's home may close the app again
+        window.hboot.bootstrap.initializeAndRun({ devDeepLinkURI: null, manifest: manifest, qsParams: {} });
+        window.__tvabBoot = 'booted ' + manifest.appVersion;
+      });
+    })
+    .catch(function (e) { window.__tvabBoot = 'error ' + e.message; });
+  return 'started';
+}
+var TVAPP_BOOT = '(' + tvappBoot.toString() + ')("https://tizenbbd.app.hulu.com")';
 
 ctx.set('startDebugger', function () {
   if (Date.now() < busy) { ctx.report('skip', 'already starting'); return Promise.resolve(false); }
@@ -132,8 +209,16 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
         var pending = [];
         client.on('Runtime.executionContextCreated', function (m) {
           var origin = m.context.origin || '';
-          if (!origin || /^file:/.test(origin)) {   // the launcher page: only make sure it cannot exit()
+          if (!origin || /^file:/.test(origin)) {   // the launcher page: make sure it cannot exit()
             client.Runtime.evaluate({ expression: NOEXIT, contextId: m.context.id }).catch(function () {});
+            if (TVAPP) {   // ...then boot Hulu's TV app there, after our script, with the D-pad helper off
+              pending.push(Promise.all([scriptP, bundleP]).then(function (res) {
+                var script = res[0] || ctx.liveScript || ctx.CFG.script;
+                return client.Runtime.evaluate({ expression: 'window.__tvabNav=1;' + script + ';\n' + TVAPP_BOOT, contextId: m.context.id, returnByValue: true })
+                  .then(function (r) { ctx.report('tvapp', (r && r.exceptionDetails ? 'EXC ' + JSON.stringify(r.exceptionDetails).slice(0, 200) : 'boot ' + (r.result && r.result.value)) + ' script ' + script.length); })
+                  .catch(function (e) { ctx.report('tvapp-err', e.message); });
+              }));
+            }
             return;
           }
           pending.push(Promise.all([scriptP, bundleP]).then(function (res) {
@@ -144,15 +229,19 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
               .catch(function (e) { ctx.report('inject-err', e.message); });
           }));
         });
+        if (TVAPP) { client.Page.addScriptToEvaluateOnNewDocument({ source: LAUNCHER_GUARD }).catch(function () {}); }
         client.Runtime.enable(); client.Page.enable();
         client.Page.setBypassCSP({ enabled: true }).catch(function () {});
         var navDone = false;
         var nav = function () {
           if (navDone || !navigateTo) { return; } navDone = true;
-          client.Page.navigate({ url: navigateTo }).then(function () { ctx.report('nav', navigateTo); })
-            .catch(function (e) { ctx.report('nav-err', e.message); });
+          if (TVAPP) { ctx.report('nav', 'none: Hulu TV app in launcher page'); }
+          else {
+            client.Page.navigate({ url: navigateTo }).then(function () { ctx.report('nav', navigateTo); })
+              .catch(function (e) { ctx.report('nav-err', e.message); });
+          }
           setTimeout(function () { busy = 0; launching = 0; }, 8000);   // launcher page is gone; next open from home works
-          [15000, 40000].forEach(function (ms) {
+          [15000, 40000, 90000].forEach(function (ms) {
             setTimeout(function () {
               client.Runtime.evaluate({ expression: STATE, returnByValue: true })
                 .then(function (r) { ctx.report('state', (ms / 1000) + 's ' + (r.result && r.result.value)); })
@@ -162,14 +251,18 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
         };
         setTimeout(nav, 6000); // navigation never waits on auth for long
         bundleP.then(function (bundle) {
-          if (!bundle) { ctx.report('attached', host + ':' + port + ' v8 no-auth'); nav(); return; }
-          ctx.report('attached', host + ':' + port + ' v8+auth');
+          if (!bundle) { ctx.report('attached', host + ':' + port + ' ' + VERSION + ' no-auth'); nav(); return; }
+          ctx.report('attached', host + ':' + port + ' ' + VERSION + (TVAPP ? ' tvapp' : '+auth'));
           return client.Network.enable().catch(function () {}).then(function () {
             var ck = bundle.cookies.map(function (c) {
               var o = { name: c.name, value: c.value, domain: c.domain, path: c.path || '/', secure: !!c.secure, httpOnly: !!c.httpOnly };
               if (c.expires) { o.expires = c.expires; }
               return o;
             });
+            if (TVAPP) {   // the TV app signs in with its own device token; the web cookies only bloat its requests
+              return Promise.all(ck.map(function (c) { return client.Network.deleteCookies({ name: c.name, domain: c.domain, path: c.path }).catch(function () {}); }))
+                .then(function () { ctx.report('cookies', 'removed ' + ck.length + ' ported web cookies'); });
+            }
             return client.Network.setCookies({ cookies: ck })
               .then(function () { ctx.report('cookies', 'set ' + ck.length); })
               .catch(function (e) { ctx.report('cookie-err', (e && e.message) || e); });
@@ -179,6 +272,81 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
     }).catch(function () { if (++tries < 200) { setTimeout(attach, 150); } else { ctx.report('fail', 'debug port never answered'); busy = 0; launching = 0; } });
   })();
 });
+
+// ---- v10 probe: read the native Hulu app's stub (config.xml holds the URL of Hulu's own TV web app) ----
+// Uses the TV's local sdbd sync protocol (LIST / RECV); results go to the T630 (/tvab/upload, reports.log).
+function sdbSync(cmd, path, parse, done) {
+  var client = ctx.adbhost.createConnection({ host: '127.0.0.1', port: 26101 });
+  var buf = new Buffer(0), fin = false, acc = [];
+  var t = setTimeout(function () { end('timeout'); }, 15000);
+  function end(err) { if (fin) { return; } fin = true; clearTimeout(t); setTimeout(function () { try { client._stream.end(); } catch (e) {} }, 300); done(err, acc); }
+  client._stream.on('error', function (e) { end('sdb ' + e.message); });
+  var sh = client.createStream('sync:');
+  client.once('_CNXN', function () {
+    var p = new Buffer(path, 'utf8'), h = new Buffer(8); h.write(cmd, 0, 'ascii'); h.writeUInt32LE(p.length, 4);
+    sh.write(Buffer.concat([h, p]));
+  });
+  sh.on('data', function (d) { buf = Buffer.concat([buf, d]); var r = parse(buf, acc); if (r) { buf = r.rest; if (r.end !== undefined) { end(r.end); } } });
+  sh.on('end', function () { end('closed'); });
+}
+function parseRecv(buf, acc) {
+  while (buf.length >= 8) {
+    var id = buf.toString('ascii', 0, 4), n = buf.readUInt32LE(4);
+    if (id === 'DATA') { if (buf.length < 8 + n) { return { rest: buf }; } acc.push(buf.slice(8, 8 + n)); buf = buf.slice(8 + n); }
+    else if (id === 'DONE') { return { rest: buf, end: null }; }
+    else if (id === 'FAIL') { return { rest: buf, end: 'FAIL ' + buf.toString('utf8', 8, Math.min(buf.length, 8 + n)) }; }
+    else { return { rest: buf, end: 'bad reply ' + JSON.stringify(id) }; }
+  }
+  return { rest: buf };
+}
+function parseList(buf, acc) {
+  while (buf.length >= 20) {
+    var id = buf.toString('ascii', 0, 4);
+    if (id === 'DENT') { var nl = buf.readUInt32LE(16); if (buf.length < 20 + nl) { return { rest: buf }; } acc.push([buf.toString('utf8', 20, 20 + nl), (buf.readUInt32LE(4) >>> 12).toString(8), buf.readUInt32LE(8)]); buf = buf.slice(20 + nl); }
+    else if (id === 'DONE') { return { rest: buf, end: null }; }
+    else if (id === 'FAIL') { return { rest: buf, end: 'FAIL ' + buf.toString('utf8', 8, Math.min(buf.length, 8 + buf.readUInt32LE(4))) }; }
+    else { return { rest: buf, end: 'bad reply ' + JSON.stringify(id) }; }
+  }
+  return { rest: buf };
+}
+function upload(name, body) {
+  return ctx.fetch(T630 + '/tvab/upload?name=' + encodeURIComponent(name), { method: 'POST', body: body })
+    .then(function (r) { ctx.report('probe-up', name + ' ' + r.status); }).catch(function (e) { ctx.report('probe-up', name + ' ' + e.message); });
+}
+function probeNative() {
+  var root = '/opt/usr/home/owner/apps_rw/LBUAQX1exg/data/';
+  var queue = [[root, 0]], files = [], dirs = 0, listing = [];
+  (function walk() {
+    if (!queue.length || listing.length > 800) { return fetchFiles(); }
+    var d = queue.shift();
+    sdbSync('LIST', d[0], parseList, function (err, acc) {
+      dirs++;
+      acc.forEach(function (e) {
+        if (e[0] === '.' || e[0] === '..') { return; }
+        var full = d[0] + e[0];
+        listing.push([full.slice(root.length), e[1], e[2]]);
+        if (e[1] === '4' && d[1] < 8) { queue.push([full + '/', d[1] + 1]); }
+        else if (e[1] === '10' && e[2] > 0 && e[2] < 2000000 && /cache|storage|index|journal|\.ldb$|\.log$|data_|f_0/i.test(full) && !/cookie|login|token|credential|secure/i.test(full)) { files.push([full, e[2]]); }
+      });
+      setTimeout(walk, 150);
+    });
+  })();
+  function fetchFiles() {
+    ctx.report('probe', 'walked ' + dirs + ' dirs, ' + listing.length + ' entries, ' + files.length + ' cache files');
+    upload('data_listing.json', JSON.stringify(listing));
+    var i = 0, total = 0;
+    (function next() {
+      if (i >= files.length || i >= 120 || total > 40000000) { ctx.report('probe', 'done ' + i + ' files ' + total + 'B'); return; }
+      var f = files[i++];
+      sdbSync('RECV', f[0], parseRecv, function (err, acc) {
+        var body = Buffer.concat(acc); total += body.length;
+        if (body.length) { upload('data_' + f[0].slice(root.length).replace(/[^A-Za-z0-9]+/g, '_'), body); }
+        else { ctx.report('probe', 'RECV ' + f[0].slice(root.length) + ' ' + err); }
+        setTimeout(next, 120);
+      });
+    })();
+  }
+}
 
 ctx.set('debugLaunch', function (appId, onPort, onFail) {
   var attempt = 0;
