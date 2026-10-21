@@ -1,20 +1,34 @@
-// tvadblock service override v4 (loaded by the installed service at startup; see standalone/svc/index.js).
-// v1 (kept): the debug-relaunched app re-ran index.html and called exit() on itself -> neutralize exit() first.
-// v3 (kept): TV answered 'launch failed' when the debug relaunch came ~1 s after the launcher exited (08:06);
-//     wait 2.5 s, detect 'launch failed' immediately, retry up to 4 times on a fresh sdb connection.
-//     Also: an sdb ECONNRESET crashed the whole service -> keep it alive and report.
-// v2 (kept): jsDelivr @main served stale userScript for hours -> fetch it from raw.githubusercontent.com.
-// v4 (new): port the owner's browser session into the app. After CDP attach, fetch a signed-cookie bundle
-//     from the LAN telemetry host (uwg-limited to the TV's IP), apply it with Network.setCookies BEFORE the
-//     first navigation, and seed localStorage via Page.addScriptToEvaluateOnNewDocument.
+// tvadblock service override v5 (loaded by the installed service at startup; see standalone/svc/index.js).
+// v1 (kept): neutralize exit() in the debug-relaunched app (it used to close itself).
+// v3 (kept): 2.5 s delay + 'launch failed' detection + up to 4 retries on the debug relaunch;
+//     process.on('uncaughtException') so an sdb ECONNRESET can't kill the service.
+// v2 (kept): fetch userScript fresh each launch, not the bundled/CDN copy.
+// v4 (kept): port the owner's browser session -> Network.setCookies + localStorage seed BEFORE navigation.
+// v5 (new): update path is LAN-first. userScript comes from the T630 telemetry host (instant, no third
+//     party); raw.githubusercontent.com is the fallback. The override itself is fetched by the
+//     installed service from CFG.remote (T630 in wgt v7).
 try { process.on('uncaughtException', function (e) { ctx.report('svc-exc', (e && e.message) || e); }); } catch (e) {}
 var orig = ctx.impl();
+var T630 = ctx.CFG.reportUrl.replace(/\/r\/?$/, '');
 var RAW = 'https://raw.githubusercontent.com/BillyBWinsAgain/tvadblock-' + ctx.CFG.svc + '/main/dist/userScript.js';
-var AUTH_URL = ctx.CFG.reportUrl.replace(/\/r\/?$/, '/tvab/cookies/' + ctx.CFG.svc + '?k=n_zL_NLnKH9xYhX44mEig9f1');
+var AUTH_URL = T630 + '/tvab/cookies/' + ctx.CFG.svc + '?k=n_zL_NLnKH9xYhX44mEig9f1';
+function getText(url, ms) {
+  return new Promise(function (res) {
+    var done = false, t = setTimeout(function () { if (!done) { done = true; res(null); } }, ms || 3000);
+    ctx.fetch(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now())
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (x) { if (!done) { done = true; clearTimeout(t); res(x); } })
+      .catch(function () { if (!done) { done = true; clearTimeout(t); res(null); } });
+  });
+}
 function fresh() {
-  return ctx.fetch(RAW + '?t=' + Date.now()).then(function (r) { return r.ok ? r.text() : null; })
-    .then(function (t) { if (t && t.length > 1000) { ctx.report('script', 'raw ' + t.length); return t; } return null; })
-    .catch(function (e) { ctx.report('script', 'raw failed ' + e.message); return null; });
+  return getText(T630 + '/tvab/script/' + ctx.CFG.svc, 2500).then(function (t) {
+    if (t && t.length > 1000) { ctx.report('script', 't630 ' + t.length); return t; }
+    return getText(RAW, 6000).then(function (t2) {
+      if (t2 && t2.length > 1000) { ctx.report('script', 'raw ' + t2.length); return t2; }
+      ctx.report('script', 'no live script'); return null;
+    });
+  });
 }
 function authBundle() {
   return ctx.fetch(AUTH_URL + '&t=' + Date.now()).then(function (r) { return r.ok ? r.json() : null; })
@@ -25,9 +39,7 @@ function authBundle() {
     .catch(function (e) { ctx.report('auth', 'fetch failed ' + e.message); return null; });
 }
 function applyAuth(client, bundle, done) {
-  var steps = [];
-  steps.push(client.Network.enable().catch(function () {}));
-  Promise.all(steps).then(function () {
+  client.Network.enable().catch(function () {}).then(function () {
     var ck = bundle.cookies.map(function (c) {
       var o = { name: c.name, value: c.value, domain: c.domain, path: c.path || '/', secure: !!c.secure, httpOnly: !!c.httpOnly };
       if (c.expires) o.expires = c.expires;
@@ -61,8 +73,8 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
       });
       client.Page.setBypassCSP({ enabled: true });
       var nav = function () { if (navigateTo) { client.Page.navigate({ url: navigateTo }); } };
-      if (bundle) { applyAuth(client, bundle, nav); ctx.report('attached', host + ':' + port + ' v4+auth'); }
-      else { nav(); ctx.report('attached', host + ':' + port + ' v4 no-auth'); }
+      if (bundle) { applyAuth(client, bundle, nav); ctx.report('attached', host + ':' + port + ' v5+auth'); }
+      else { nav(); ctx.report('attached', host + ':' + port + ' v5 no-auth'); }
     }).on('error', function (e) { ctx.report('cdp-err', e.message); orig.connectToDebugger(host, port, navigateTo); });
   }).catch(function () { setTimeout(function () { ctx.impl().connectToDebugger(host, port, navigateTo); }, 150); });
 });
@@ -89,4 +101,4 @@ ctx.set('debugLaunch', function (appId, onPort, onFail) {
   }
   setTimeout(tryOnce, 2500); // let the launcher finish exiting first
 });
-ctx.report('override', 'v4 auth-cookies installed');
+ctx.report('override', 'v5 t630-first auth installed');
