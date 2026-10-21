@@ -1,5 +1,5 @@
 (function tvadblock() {
-  if (!/(^|\.)(play\.hbomax\.com|play\.max\.com)$/.test(location.hostname)) {
+  if (!/(^|\.)(play\.hbomax\.com|play\.max\.com)$/.test(location.hostname) && location.protocol !== "file:" && location.protocol !== "app:" && !/^(localhost|127.0.0.1)$/.test(location.hostname)) {
     return;
   }
   if (window.__tvadblock_max) {
@@ -1158,6 +1158,78 @@ ${details.xhr.response}`);
       });
     });
   }
+  function jsonPruneXhrResponse(rawPrunePaths = "", rawNeedlePaths = "", ...varargs) {
+    const safe = safeSelf();
+    const logPrefix = safe.makeLogPrefix("json-prune-xhr-response", rawPrunePaths, rawNeedlePaths);
+    const xhrInstances = /* @__PURE__ */ new WeakMap();
+    const extraArgs = safe.parseVarargs(varargs);
+    const propNeedles = parsePropertiesToMatchFn(extraArgs.propsToMatch, "url");
+    const stackNeedle = safe.initPattern(extraArgs.stackToMatch || "", { canNegate: true });
+    self.XMLHttpRequest = class extends self.XMLHttpRequest {
+      open(method, url, ...args) {
+        const xhrDetails = { method, url };
+        let outcome = "match";
+        if (propNeedles.size !== 0) {
+          if (matchObjectPropertiesFn(propNeedles, xhrDetails) === void 0) {
+            outcome = "nomatch";
+          }
+        }
+        if (outcome === "match") {
+          if (safe.logLevel > 1) {
+            safe.uboLog(logPrefix, `Matched optional "propsToMatch", "${extraArgs.propsToMatch}"`);
+          }
+          xhrInstances.set(this, xhrDetails);
+        }
+        return super.open(method, url, ...args);
+      }
+      get response() {
+        const innerResponse = super.response;
+        const xhrDetails = xhrInstances.get(this);
+        if (xhrDetails === void 0) {
+          return innerResponse;
+        }
+        const responseLength = typeof innerResponse === "string" ? innerResponse.length : void 0;
+        if (xhrDetails.lastResponseLength !== responseLength) {
+          xhrDetails.response = void 0;
+          xhrDetails.lastResponseLength = responseLength;
+        }
+        if (xhrDetails.response !== void 0) {
+          return xhrDetails.response;
+        }
+        let objBefore;
+        if (typeof innerResponse === "object") {
+          objBefore = innerResponse;
+        } else if (typeof innerResponse === "string") {
+          try {
+            objBefore = safe.JSON_parse(innerResponse);
+          } catch {
+          }
+        }
+        if (typeof objBefore !== "object") {
+          return xhrDetails.response = innerResponse;
+        }
+        const objAfter = objectPruneFn(
+          objBefore,
+          rawPrunePaths,
+          rawNeedlePaths,
+          stackNeedle,
+          extraArgs
+        );
+        let outerResponse;
+        if (typeof objAfter === "object") {
+          outerResponse = typeof innerResponse === "string" ? safe.JSON_stringify(objAfter) : objAfter;
+          safe.uboLog(logPrefix, "Pruned");
+        } else {
+          outerResponse = innerResponse;
+        }
+        return xhrDetails.response = outerResponse;
+      }
+      get responseText() {
+        const response = this.response;
+        return typeof response !== "string" ? super.responseText : response;
+      }
+    };
+  }
   function tvabNetwork(rules) {
     const toRe = (p) => new RegExp(p);
     const media = rules.filter((r) => r.kind === "media").map((r) => ({ re: toRe(r.re) }));
@@ -1239,6 +1311,14 @@ ${details.xhr.response}`);
   }
   try {
     preventFetch(...["litix.io"]);
+  } catch (e) {
+  }
+  try {
+    jsonPruneXhrResponse(...["ssaiInfo", "", "propsToMatch", "/playbackInfo"]);
+  } catch (e) {
+  }
+  try {
+    jsonPruneXhrResponse(...["fallback.ssaiInfo manifest.url", "fallback.ssaiInfo", "propsToMatch", "/playbackInfo"]);
   } catch (e) {
   }
   try {
