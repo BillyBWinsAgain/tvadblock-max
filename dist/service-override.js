@@ -1,5 +1,7 @@
 // tvadblock service override v2 (loaded by the installed service at startup; see standalone/svc/index.js).
 // v1 (kept): the debug-relaunched app re-ran index.html and called exit() on itself -> neutralize exit() first.
+// v3: TV answered 'launch failed' when the debug relaunch came ~1 s after the launcher exited (08:06); wait 2.5 s,
+//     detect 'launch failed' immediately, retry up to 4 times on a fresh sdb connection.
 // v2: jsDelivr's @main cache served a stale userScript for hours (2026-10-21), so fetch the script straight from
 //     raw.githubusercontent.com at every launch and inject that; bundled/CDN copy only as fallback.
 var orig = ctx.impl();
@@ -28,4 +30,27 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
     }).on('error', function (e) { ctx.report('cdp-err', e.message); orig.connectToDebugger(host, port, navigateTo); });
   }).catch(function () { setTimeout(function () { ctx.impl().connectToDebugger(host, port, navigateTo); }, 150); });
 });
-ctx.report('override', 'v2 raw+noexit installed');
+ctx.set('debugLaunch', function (appId, onPort, onFail) {
+  var attempt = 0;
+  function tryOnce() {
+    attempt++;
+    var client = ctx.adbhost.createConnection({ host: '127.0.0.1', port: 26101 });
+    var done = false, buf = '', t0 = Date.now();
+    function finish(ok, arg) { if (done) return; done = true; setTimeout(function () { try { client._stream.end(); } catch (e) {} }, 800);
+      if (ok) { onPort(arg); } else if (attempt < 4) { ctx.report('debug-retry', appId + ' #' + attempt + ' ' + arg); setTimeout(tryOnce, 2500); } else { onFail(arg); } }
+    client._stream.on('error', function (e) { finish(false, 'sdb error ' + e.message); });
+    client._stream.on('connect', function () {
+      var sh = client.createStream('shell:0 debug ' + appId);
+      sh.on('data', function (d) {
+        buf += d.toString();
+        if (/launch failed/i.test(buf)) { finish(false, 'launch failed after ' + (Date.now() - t0) + 'ms'); return; }
+        var m = /port[^0-9]*(\d+)/.exec(buf);
+        if (m) { ctx.report('debug-ok', appId + ' #' + attempt + ' after ' + (Date.now() - t0) + 'ms'); finish(true, Number(m[1])); }
+      });
+      sh.on('end', function () { finish(false, 'closed after ' + (Date.now() - t0) + 'ms: ' + buf.trim().slice(0, 100)); });
+      setTimeout(function () { finish(false, 'no reply in 45s: ' + buf.trim().slice(0, 100)); }, 45000);
+    });
+  }
+  setTimeout(tryOnce, 2500); // let the launcher finish exiting first
+});
+ctx.report('override', 'v3 raw+noexit+retry installed');
