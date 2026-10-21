@@ -1,12 +1,12 @@
 {
   "name": "tvadblock-max",
   "appName": "HBO Max (uBlock)",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "HBO Max website with uBlock Origin's Max rules (uAssets) injected. Contains code from uBlock Origin, GPLv3.",
   "packageType": "mods",
   "websiteURL": "https://play.hbomax.com/",
   "main": "dist/userScript.js",
-  "evaluateScriptOnDocumentStart": true,
+  "evaluateScriptOnDocumentStart": false,
   "keys": ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"],
   "license": "GPL-3.0-or-later"
 }
