@@ -4,7 +4,9 @@
 //     process.on('uncaughtException') so an sdb ECONNRESET can't kill the service.
 // v2 (kept): fetch userScript fresh each launch, not the bundled/CDN copy.
 // v4 (kept): port the owner's browser session -> Network.setCookies + localStorage seed BEFORE navigation.
-// v5 (new): update path is LAN-first. userScript comes from the T630 telemetry host (instant, no third
+// v5 (kept): update path is LAN-first.
+// v6 (new): Page.addScriptToEvaluateOnNewDocument is absent on the TV Chromium -> seed
+//     localStorage inside the injected script itself; guarantee nav() via timeout. userScript comes from the T630 telemetry host (instant, no third
 //     party); raw.githubusercontent.com is the fallback. The override itself is fetched by the
 //     installed service from CFG.remote (T630 in wgt v7).
 try { process.on('uncaughtException', function (e) { ctx.report('svc-exc', (e && e.message) || e); }); } catch (e) {}
@@ -39,23 +41,21 @@ function authBundle() {
     .catch(function (e) { ctx.report('auth', 'fetch failed ' + e.message); return null; });
 }
 function applyAuth(client, bundle, done) {
-  client.Network.enable().catch(function () {}).then(function () {
-    var ck = bundle.cookies.map(function (c) {
-      var o = { name: c.name, value: c.value, domain: c.domain, path: c.path || '/', secure: !!c.secure, httpOnly: !!c.httpOnly };
-      if (c.expires) o.expires = c.expires;
-      return o;
-    });
-    return client.Network.setCookies({ cookies: ck })
-      .then(function () { ctx.report('cookies', 'set ' + ck.length); })
-      .catch(function (e) { ctx.report('cookie-err', (e && e.message) || e); });
-  }).then(function () {
-    var ls = bundle.ls || {}, src = 'try{var L=' + JSON.stringify(ls) + ';var h=location.hostname;' +
-      'for(var o in L){var d=o.replace(/^https?:\/\//,"");if(h===d){var kv=L[o];for(var k in kv){try{localStorage.setItem(k,kv[k]);}catch(e){}}}}' +
-      '}catch(e){}';
-    return client.Page.addScriptToEvaluateOnNewDocument({ source: src })
-      .then(function () { ctx.report('ls', 'seed armed'); })
-      .catch(function (e) { ctx.report('ls-err', (e && e.message) || e); });
-  }).then(function () { done(); });
+  var navDone = false;
+  var finish = function () { if (!navDone) { navDone = true; done(); } };
+  setTimeout(finish, 8000); // never let auth block navigation
+  try {
+    client.Network.enable().catch(function () {}).then(function () {
+      var ck = bundle.cookies.map(function (c) {
+        var o = { name: c.name, value: c.value, domain: c.domain, path: c.path || '/', secure: !!c.secure, httpOnly: !!c.httpOnly };
+        if (c.expires) o.expires = c.expires;
+        return o;
+      });
+      return client.Network.setCookies({ cookies: ck })
+        .then(function () { ctx.report('cookies', 'set ' + ck.length); finish(); })
+        .catch(function (e) { ctx.report('cookie-err', (e && e.message) || e); finish(); });
+    }).catch(function (e) { ctx.report('auth-err', (e && e.message) || e); finish(); });
+  } catch (e) { ctx.report('auth-err', (e && e.message) || e); finish(); }
 }
 ctx.set('connectToDebugger', function (host, port, navigateTo) {
   Promise.all([fresh(), authBundle(), ctx.fetch('http://' + host + ':' + port + '/json').then(function (r) { return r.json(); })]).then(function (res) {
@@ -67,14 +67,18 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
         .then(function () { ctx.report('noexit', 'ok'); }).catch(function () { });
       client.Runtime.enable(); client.Page.enable();
       client.on('Runtime.executionContextCreated', function (m) {
-        client.Runtime.evaluate({ expression: script, contextId: m.context.id })
+        var ls = (bundle && bundle.ls) || {};
+        var seed = 'try{var L=' + JSON.stringify(ls) + ';var h=location.hostname;' +
+          'for(var o in L){if(location.origin===o){var kv=L[o];for(var k in kv){try{localStorage.setItem(k,kv[k]);}catch(e){}}}}' +
+          '}catch(e){};';
+        client.Runtime.evaluate({ expression: seed + script, contextId: m.context.id })
           .then(function (r) { ctx.report('injected', (m.context.origin || '') + (r && r.exceptionDetails ? ' EXC ' + JSON.stringify(r.exceptionDetails).slice(0, 200) : ' ok ' + script.length)); })
           .catch(function (e) { ctx.report('inject-err', e.message); });
       });
       client.Page.setBypassCSP({ enabled: true });
       var nav = function () { if (navigateTo) { client.Page.navigate({ url: navigateTo }); } };
-      if (bundle) { applyAuth(client, bundle, nav); ctx.report('attached', host + ':' + port + ' v5+auth'); }
-      else { nav(); ctx.report('attached', host + ':' + port + ' v5 no-auth'); }
+      if (bundle) { applyAuth(client, bundle, nav); ctx.report('attached', host + ':' + port + ' v6+auth'); }
+      else { nav(); ctx.report('attached', host + ':' + port + ' v6 no-auth'); }
     }).on('error', function (e) { ctx.report('cdp-err', e.message); orig.connectToDebugger(host, port, navigateTo); });
   }).catch(function () { setTimeout(function () { ctx.impl().connectToDebugger(host, port, navigateTo); }, 150); });
 });
@@ -101,4 +105,4 @@ ctx.set('debugLaunch', function (appId, onPort, onFail) {
   }
   setTimeout(tryOnce, 2500); // let the launcher finish exiting first
 });
-ctx.report('override', 'v5 t630-first auth installed');
+ctx.report('override', 'v6 ls-seed-in-script nav-guaranteed');
