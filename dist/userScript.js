@@ -1442,6 +1442,13 @@ ${details.xhr.response}`);
   }
   var KEYS = { 37: "left", 38: "up", 39: "right", 40: "down" };
   document.addEventListener("keydown", function(e) {
+    var ui = document.getElementById("tvab-root");
+    if (ui && ui.style.display !== "none") {
+      return;
+    }
+    if (window.__tvabHuluUI && /^\/watch\//.test(location.pathname)) {
+      return;
+    }
     var active = document.activeElement;
     if (isText(active) && (e.keyCode === 37 || e.keyCode === 39)) {
       return;
