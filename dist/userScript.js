@@ -1,6 +1,6 @@
 try {
   (function tvabLauncherGuard() {
-    if (location.protocol !== "file:") {
+    if (location.protocol !== "file:" || window.__tvabLoader) {
       return;
     }
     var nx = function() {
@@ -44,6 +44,20 @@ try {
       Object.defineProperty(Object, "hasOwn", {
         value: function hasOwn(o, k) {
           return Object.prototype.hasOwnProperty.call(Object(o), k);
+        },
+        configurable: true,
+        writable: true
+      });
+    }
+    if (typeof Response === "function" && typeof Response.json !== "function") {
+      Object.defineProperty(Response, "json", {
+        value: function json(data, init) {
+          init = init || {};
+          var headers = new Headers(init.headers);
+          if (!headers.has("content-type")) {
+            headers.set("content-type", "application/json");
+          }
+          return new Response(JSON.stringify(data), { status: init.status === void 0 ? 200 : init.status, statusText: init.statusText || "", headers });
         },
         configurable: true,
         writable: true

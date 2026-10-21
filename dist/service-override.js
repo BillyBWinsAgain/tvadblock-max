@@ -1,5 +1,7 @@
-// tvadblock service override v13 (loaded by the installed service at startup; see standalone/svc/index.js).
-// v13 (new): Hulu runs as Hulu's own TV app (tizenbbd.app.hulu.com/livingroom/tizenbbd/1, found via v12) inside the
+// tvadblock service override v14 (loaded by the installed service at startup; see standalone/svc/index.js).
+// v14 (new): HBO Max runs Max's own TV app the same way (tizen.play.max.com, found by DNS capture of the native
+//   5b8c3eb16b.BeamCTVDev app): webapis first, <base> at Max's host, then its scripts in document order.
+// v13 (kept): Hulu runs as Hulu's own TV app (tizenbbd.app.hulu.com/livingroom/tizenbbd/1, found via v12) inside the
 //   launcher's local page: hulu.com's web player cannot run on Chrome 76 (?. and ?? syntax), the TV build can.
 //   No navigation; ported web cookies are deleted (they made auth.hulu.com answer 431); webapis calls our package
 //   lacks privileges for get this TV's own values (REST api/v2); exit() is restored once Hulu's boot starts.
@@ -22,7 +24,7 @@
 // v7 (kept): attach + noexit first, script/auth fetched in the background.
 // v4-v6 (kept): owner's browser session -> Network.setCookies + localStorage seed before navigation.
 // v3 (kept): 2.5 s delay + fast 'launch failed' detection + retries; uncaughtException guard.
-var VERSION = 'v13';
+var VERSION = 'v14';
 var G = global.__tvab || (global.__tvab = {});
 if (!G.exc) { G.exc = true; try { process.on('uncaughtException', function (e) { ctx.report('svc-exc', (e && e.message) || e); }); } catch (e) {} }
 var ORIG = ctx.impl();
@@ -117,7 +119,8 @@ var STATE = '(function(){var r=document.getElementById("tvab-root");return locat
   '" | ui="+(r?(r.style.display==="none"?"hidden":(r.innerText||"").replace(/\\s+/g," ").slice(0,140)):"none")+" | title="+document.title;})()';
 
 // ---- v13: Hulu's own TV app (the build the native Samsung app loads), booted in the launcher's local page ----
-var TVAPP = ctx.CFG.svc === 'hulu';
+var TVAPP_URL = { hulu: 'https://tizenbbd.app.hulu.com', max: 'https://tizen.play.max.com/' }[ctx.CFG.svc];
+var TVAPP = !!TVAPP_URL;
 var LAUNCHER_GUARD = "if(location.protocol==='file:'){var of=window.fetch;window.fetch=function(u){if(String(u).indexOf(':811')>=0){return new Promise(function(){});}return of.apply(this,arguments);};}";
 function tvappBoot(H) {
   if (window.__tvabBoot) { return 'already ' + window.__tvabBoot; }
@@ -179,7 +182,68 @@ function tvappBoot(H) {
     .catch(function (e) { window.__tvabBoot = 'error ' + e.message; });
   return 'started';
 }
-var TVAPP_BOOT = '(' + tvappBoot.toString() + ')("https://tizenbbd.app.hulu.com")';
+
+// Max's TV app is a static hosted page: webapis + ordered <script defer> + css, all relative to its host.
+function staticBoot(H) {
+  if (window.__tvabBoot) { return 'already ' + window.__tvabBoot; }
+  window.__tvabBoot = 'starting';
+  function script(src) { return new Promise(function (res, rej) { var s = document.createElement('script'); s.src = src; s.async = false; s.onload = res; s.onerror = function () { rej(new Error('load ' + src)); }; document.head.appendChild(s); }); }
+  // this TV's own values (REST http://<tv>:8001/api/v2/) for productinfo/adinfo calls our package has no privilege for
+  var FB = { 'productinfo.getModel': 'UN43TU690TFXZA', 'productinfo.getRealModel': 'UN43TU690TFXZA', 'productinfo.getModelCode': '21_KANTSU2E_UHD_BASIC1',
+    'productinfo.getDuid': '3c0d4318-4e35-4e8e-ab3d-87bb48481f54', 'productinfo.getFirmware': '', 'productinfo.isUdPanelSupported': true,
+    'productinfo.isUHDAModel': false, 'productinfo.is8KPanelSupported': false, 'productinfo.getLicensedVendor': 'Samsung',
+    'adinfo.getTIFA': '', 'adinfo.isLATEnabled': true };
+  window.__wapi = [];
+  function wrapAll() {
+    if (!window.webapis) { window.__wapi.push('no webapis'); return; }
+    Object.keys(webapis).forEach(function (ns) {
+      var o = webapis[ns]; if (!o || typeof o !== 'object') { return; }
+      Object.keys(o).concat(Object.getOwnPropertyNames(Object.getPrototypeOf(o) || {})).forEach(function (k) {
+        var f; try { f = o[k]; } catch (e) { return; }
+        if (typeof f !== 'function' || k === 'constructor') { return; }
+        try {
+          o[k] = function () {
+            try { return f.apply(o, arguments); } catch (e) {
+              var key = ns + '.' + k;
+              if (e && e.name === 'SecurityError' && key in FB) { window.__wapi.push(key + ' stand-in'); return FB[key]; }
+              window.__wapi.push(key + ' ' + (e && e.name)); throw e;
+            }
+          };
+        } catch (e) { }
+      });
+    });
+  }
+  script('$WEBAPIS/webapis/webapis.js').catch(function (e) { window.__wapi.push('webapis.js ' + e.message); })
+    .then(function () { wrapAll(); return fetch(H, { credentials: 'include' }); })
+    .then(function (r) { return r.text(); })
+    .then(function (html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html'), srcs = [];
+      [].slice.call(document.querySelectorAll('style')).forEach(function (st) { st.parentNode.removeChild(st); });  // the launcher's centering css
+      document.documentElement.style.cssText = ''; document.body.style.cssText = '';
+      var b = document.createElement('base'); b.href = H; document.head.appendChild(b);
+      document.title = doc.title || document.title;
+      [].slice.call(doc.head.children).forEach(function (el) {
+        var tag = el.tagName;
+        if (tag === 'SCRIPT') {
+          var src = el.getAttribute('src');
+          if (src && /\$WEBAPIS/.test(src)) { return; }
+          if (src) { srcs.push(src); } else { try { (0, eval)(el.textContent); } catch (e) { window.__wapi.push('inline ' + e.message); } }
+        } else if (tag === 'LINK') {
+          var l = document.createElement('link'); l.rel = el.getAttribute('rel'); l.href = el.getAttribute('href'); document.head.appendChild(l);
+        } else if (tag === 'META' && el.getAttribute('name') === 'viewport') {
+          var m = document.createElement('meta'); m.name = 'viewport'; m.content = el.getAttribute('content'); document.head.appendChild(m);
+        }
+      });
+      document.body.innerHTML = doc.body.innerHTML;
+      return srcs.reduce(function (p, src) { return p.then(function () { return script(src); }); }, Promise.resolve()).then(function () {
+        if (window.__tvabExitRestore) { window.__tvabExitRestore(); }   // Back on the app's home may close it again
+        window.__tvabBoot = 'booted ' + srcs.length + ' scripts';
+      });
+    })
+    .catch(function (e) { window.__tvabBoot = 'error ' + e.message; });
+  return 'started';
+}
+var TVAPP_BOOT = TVAPP ? '(' + (ctx.CFG.svc === 'hulu' ? tvappBoot : staticBoot).toString() + ')(' + JSON.stringify(TVAPP_URL) + ')' : '';
 
 ctx.set('startDebugger', function () {
   if (Date.now() < busy) { ctx.report('skip', 'already starting'); return Promise.resolve(false); }
@@ -235,7 +299,7 @@ ctx.set('connectToDebugger', function (host, port, navigateTo) {
         var navDone = false;
         var nav = function () {
           if (navDone || !navigateTo) { return; } navDone = true;
-          if (TVAPP) { ctx.report('nav', 'none: Hulu TV app in launcher page'); }
+          if (TVAPP) { ctx.report('nav', 'none: ' + ctx.CFG.svc + ' TV app in launcher page'); }
           else {
             client.Page.navigate({ url: navigateTo }).then(function () { ctx.report('nav', navigateTo); })
               .catch(function (e) { ctx.report('nav-err', e.message); });
