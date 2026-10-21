@@ -1554,6 +1554,6 @@ try {
 } catch (e) {
 }
 try {
-  window.__tvabFocus && window.__tvabFocus("input[type=email], input[name*=email i], input[autocomplete=username], input[autocomplete=email]");
+  window.__tvabFocus && window.__tvabFocus("input[type=password], input[type=email], input[name*=email i], input[autocomplete=username], input[autocomplete=email]");
 } catch (e) {
 }
