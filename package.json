@@ -1,7 +1,7 @@
 {
   "name": "tvadblock-max",
   "appName": "HBO Max (uBlock)",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "HBO Max website with uBlock Origin's Max rules (uAssets) injected. Contains code from uBlock Origin, GPLv3.",
   "packageType": "mods",
   "websiteURL": "https://play.hbomax.com/",

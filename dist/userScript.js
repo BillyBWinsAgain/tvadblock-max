@@ -1079,7 +1079,7 @@ ${details.xhr.response}`);
   }
   function preventFetchFn(trusted = false, propsToMatch = "", responseBody = "", responseType = "", ...varargs) {
     const safe = safeSelf();
-    const setTimeout = self.setTimeout;
+    const setTimeout2 = self.setTimeout;
     const scriptletName = `${trusted ? "trusted-" : ""}prevent-fetch`;
     const logPrefix = safe.makeLogPrefix(
       scriptletName,
@@ -1149,7 +1149,7 @@ ${details.xhr.response}`);
         safe.Object_defineProperties(response, props);
         if (extraArgs.throttle) {
           return new Promise((resolve) => {
-            setTimeout(() => {
+            setTimeout2(() => {
               resolve(response);
             }, extraArgs.throttle);
           });
@@ -1250,3 +1250,181 @@ ${details.xhr.response}`);
   } catch (e) {
   }
 })();
+(function tvabNav() {
+  if (window.__tvabNav) {
+    return;
+  }
+  window.__tvabNav = true;
+  var SEL = 'a[href], button, input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=tab], [role=menuitem], [tabindex]:not([tabindex="-1"]), [onclick]';
+  var current = null;
+  function addStyle() {
+    if (document.getElementById("tvab-nav-style")) {
+      return;
+    }
+    var st = document.createElement("style");
+    st.id = "tvab-nav-style";
+    st.textContent = ".tvab-focus { outline: 6px solid #ffcc00 !important; outline-offset: 3px !important; box-shadow: 0 0 0 9px rgba(0,0,0,.6) !important; border-radius: 6px; }";
+    (document.head || document.documentElement).appendChild(st);
+  }
+  function visible(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) {
+      return false;
+    }
+    var cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none" && cs.opacity !== "0" && !el.disabled;
+  }
+  function candidates() {
+    return Array.prototype.filter.call(document.querySelectorAll(SEL), visible);
+  }
+  function center(el) {
+    var r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, r };
+  }
+  function setCurrent(el) {
+    if (current) {
+      current.classList.remove("tvab-focus");
+    }
+    current = el;
+    if (!el) {
+      return;
+    }
+    addStyle();
+    el.classList.add("tvab-focus");
+    try {
+      el.focus({ preventScroll: true });
+    } catch (e) {
+    }
+    el.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+  function first() {
+    var c = candidates();
+    var inView = c.filter(function(el) {
+      var r = el.getBoundingClientRect();
+      return r.top >= 0 && r.top < innerHeight;
+    });
+    return inView[0] || c[0] || null;
+  }
+  function move(dir) {
+    var c = candidates();
+    if (!current || c.indexOf(current) < 0) {
+      setCurrent(first());
+      return;
+    }
+    var a = center(current), best = null, bestScore = Infinity;
+    c.forEach(function(el) {
+      if (el === current || current.contains(el) || el.contains(current)) {
+        return;
+      }
+      var b = center(el), dx = b.x - a.x, dy = b.y - a.y;
+      var primary, cross;
+      if (dir === "left") {
+        if (b.r.right > a.r.left + 2) {
+          return;
+        }
+        primary = -dx;
+        cross = Math.abs(dy);
+      } else if (dir === "right") {
+        if (b.r.left < a.r.right - 2) {
+          return;
+        }
+        primary = dx;
+        cross = Math.abs(dy);
+      } else if (dir === "up") {
+        if (b.r.bottom > a.r.top + 2) {
+          return;
+        }
+        primary = -dy;
+        cross = Math.abs(dx);
+      } else {
+        if (b.r.top < a.r.bottom - 2) {
+          return;
+        }
+        primary = dy;
+        cross = Math.abs(dx);
+      }
+      var score = primary + cross * 2.5;
+      if (score < bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    });
+    if (best) {
+      setCurrent(best);
+    } else if (dir === "down") {
+      window.scrollBy(0, innerHeight * 0.6);
+    } else if (dir === "up") {
+      window.scrollBy(0, -innerHeight * 0.6);
+    }
+  }
+  function isText(el) {
+    return el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" && !/^(button|submit|checkbox|radio|reset|image)$/i.test(el.type));
+  }
+  var KEYS = { 37: "left", 38: "up", 39: "right", 40: "down" };
+  document.addEventListener("keydown", function(e) {
+    var active = document.activeElement;
+    if (isText(active) && (e.keyCode === 37 || e.keyCode === 39)) {
+      return;
+    }
+    if (KEYS[e.keyCode]) {
+      if (active && active.tagName === "VIDEO") {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      move(KEYS[e.keyCode]);
+      return;
+    }
+    if (e.keyCode === 13 && current) {
+      if (isText(current)) {
+        current.focus();
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      current.click();
+      return;
+    }
+    if (e.keyCode === 10009) {
+      e.preventDefault();
+      if (isText(active)) {
+        active.blur();
+        return;
+      }
+      history.length > 1 ? history.back() : tizen.application.getCurrentApplication().exit();
+    }
+  }, true);
+  function boot() {
+    addStyle();
+    if (!current) {
+      setCurrent(first());
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+  new MutationObserver(function() {
+    if (!current || !document.contains(current)) {
+      setCurrent(first());
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  window.__tvabFocus = function(selector) {
+    var t0 = Date.now();
+    (function tryIt() {
+      var el = document.querySelector(selector);
+      if (el && visible(el)) {
+        setCurrent(el);
+        return;
+      }
+      if (Date.now() - t0 < 2e4) {
+        setTimeout(tryIt, 300);
+      }
+    })();
+  };
+})();
+try {
+  window.__tvabFocus && window.__tvabFocus("input[type=email], input[name*=email i], input[autocomplete=username], input[autocomplete=email]");
+} catch (e) {
+}
